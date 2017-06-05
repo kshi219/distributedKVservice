@@ -1,11 +1,4 @@
-/*
 
-A trivial client to illustrate how the kvservice library can be used
-from an application in assignment 6 for UBC CS 416 2016 W2.
-
-Usage:
-go run client.go
-*/
 
 package main
 
