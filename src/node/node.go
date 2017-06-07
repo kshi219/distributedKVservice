@@ -114,6 +114,7 @@ func (p *Peer) FreeReadThenWritelock(key string, reply *bool) error {
 //
 func (p *Peer) commit(mods changes, reply *bool) error {
 
+	// write and release write locks
 	resourceLock.Lock()
 	for k,v := range mods.writes {
 		//write
@@ -130,6 +131,7 @@ func (p *Peer) commit(mods changes, reply *bool) error {
 	}
 	resourceLock.Unlock()
 
+	// release read locks
 	for _, k := range mods.reads {
 		elementsLock.RLock()
 		elock := elements[k]
