@@ -10,6 +10,7 @@ type Key string
 // Represent a value in the system.
 type Value string
 
+
 // An interface representing a connection to the key-value store. To
 // create a new connection use the NewConnection() method.
 type connection interface {
