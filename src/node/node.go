@@ -43,17 +43,17 @@ func main() {
 	resources = make(map[string]string)
 	elements = make(map[string]*sync.RWMutex)
 
-	// Register an RPC handler on default interfaces
-	arith := new(Peer)
-	rpc.Register(arith)
-	rpc.HandleHTTP()
-	l, e := net.Listen("tcp", ":1234")
-	if e != nil {
-		log.Fatal("listen error:", e)
-	}
+	pServer := rpc.NewServer()
+	p := new(Peer)
+	pServer.Register(p)
 
-	// Serve in a separate goroutine.
-	go http.Serve(l, nil)
+	l, err := net.Listen("tcp", peerIPs[LOCALPID])
+	checkError("", err, true)
+	for {
+		conn, err := l.Accept()
+		checkError("", err, false)
+		go pServer.ServeConn(conn)
+	}
 
 	time.Sleep(600 * 1000 * time.Millisecond)
 }
@@ -148,3 +148,11 @@ func (p *Peer) commit(mods changes, reply *bool) error {
 	return nil
 }
 
+func checkError(msg string, err error, exit bool) {
+	if err != nil {
+		log.Println(msg, err)
+		if exit {
+			os.Exit(-1)
+		}
+	}
+}
