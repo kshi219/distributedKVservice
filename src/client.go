@@ -1,5 +1,3 @@
-
-
 package main
 
 // Expects kvservice.go to be in the ./kvservice/ dir, relative to

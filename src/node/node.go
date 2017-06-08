@@ -1,28 +1,26 @@
-package main
+package node
 
 import (
 	"log"
 	"net"
 	"net/rpc"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
-	"net/http"
 	"time"
+	"../kvservice"
 )
 
-var LOCALPID int
+//var LOCALPID int
+//
+//var peerIPs map[int]string
 
-var peerIPs map[int]string
-
-var rServerConn *rpc.Client
-
-
-var resources map[string]string // the k-v store
+//var rServerConn *rpc.Client
 
 
-var elements map[string]*sync.RWMutex // map of locks for each key, pointers so we can wait on/modify
+var resources map[kvservice.Key]kvservice.Value // the k-v store
+
+
+var elements map[kvservice.Key]*sync.RWMutex // map of locks for each key, pointers so we can wait on/modify
                                     // each individual lock without modifying the map
 
 var resourceLock sync.RWMutex // we can only have one writer to the resources map
@@ -30,9 +28,11 @@ var elementsLock sync.RWMutex // we can only have one writer to the elements map
 
 type Peer int
 
-type changes struct{
-	writes map[string]string
-	reads []string
+type Changes struct{
+	Writes map[kvservice.Key]kvservice.Value
+	// for reads the value of the map is not used..
+	// may be a better struct for this? TODO
+	Reads map[kvservice.Key]kvservice.Value
 }
 
 
@@ -40,14 +40,14 @@ type changes struct{
 
 func main() {
 
-	resources = make(map[string]string)
-	elements = make(map[string]*sync.RWMutex)
+	resources = make(map[kvservice.Key]kvservice.Value)
+	elements = make(map[kvservice.Key]*sync.RWMutex)
 
 	pServer := rpc.NewServer()
 	p := new(Peer)
 	pServer.Register(p)
 
-	l, err := net.Listen("tcp", peerIPs[LOCALPID])
+	l, err := net.Listen("tcp", ":1234")
 	checkError("", err, true)
 	for {
 		conn, err := l.Accept()
@@ -59,7 +59,7 @@ func main() {
 }
 
 // called by Get, we assume all get requests correspond to existing keys
-func (p *Peer) Read(key string, reply *string) error {
+func (p *Peer) Read(key kvservice.Key, reply *kvservice.Value) error {
 	// get elements rlock
 	elementsLock.RLock()
 	elock := elements[key]
@@ -77,7 +77,7 @@ func (p *Peer) Read(key string, reply *string) error {
 
 
 // called by write, don't actually write anything, just lock for writing later during commit
-func (p *Peer) Writelock(key string, reply *bool) error {
+func (p *Peer) Write(key kvservice.Key, reply *bool) error {
 	// get element lock
 	elementsLock.Lock()
 	elock, exists := elements[key]
@@ -97,7 +97,7 @@ func (p *Peer) Writelock(key string, reply *bool) error {
 }
 
 // special write called by client who just read the same key
-func (p *Peer) FreeReadThenWritelock(key string, reply *bool) error {
+func (p *Peer) FreeReadThenWritelock(key kvservice.Key, reply *bool) error {
 	// get element lock
 	elementsLock.RLock()
 	elock := elements[key]
@@ -111,12 +111,13 @@ func (p *Peer) FreeReadThenWritelock(key string, reply *bool) error {
 	return nil
 }
 
-//
-func (p *Peer) commit(mods changes, reply *bool) error {
+//commits a struct of changes, including writes which will happen "for real" now
+//and reads which will drop their read locks
+func (p *Peer) Commit(mods Changes, reply *bool) error {
 
 	// write and release write locks
 	resourceLock.Lock()
-	for k,v := range mods.writes {
+	for k,v := range mods.Writes {
 		//write
 		resources[k] = v
 
@@ -132,7 +133,7 @@ func (p *Peer) commit(mods changes, reply *bool) error {
 	resourceLock.Unlock()
 
 	// release read locks
-	for _, k := range mods.reads {
+	for k, _ := range mods.Reads {
 		elementsLock.RLock()
 		elock := elements[k]
 		elementsLock.RUnlock()
@@ -146,6 +147,35 @@ func (p *Peer) commit(mods changes, reply *bool) error {
 
 	*reply = true
 	return nil
+}
+
+func (p *Peer) Abort(mods Changes, reply *bool) error {
+	//drop all locks, do nothing else for now
+	//TODO the Write method above can expand the elements Map
+	// if left untouched, we waste memory, until key is used again
+	//could be managed better... to avoid this somehow, we can
+	// possible truncate the elements map here, but that can be heavy
+	// holds up other concurrent operations on elements map...
+	// maybe this cost can be amortized somehow over writes by keeping
+	// a separate structure?? TODO
+
+	elementsLock.RLock()
+	for k,_ := range mods.Writes {
+		elock := elements[k]
+		// release element
+		(*elock).Unlock()
+
+	}
+	// release read locks
+	for k, _ := range mods.Reads {
+		elock := elements[k]
+		// release element
+		(*elock).RUnlock()
+	}
+	elementsLock.RUnlock()
+	*reply = true
+	return nil
+
 }
 
 func checkError(msg string, err error, exit bool) {

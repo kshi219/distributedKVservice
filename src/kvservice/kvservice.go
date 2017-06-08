@@ -1,14 +1,21 @@
-
-
 package kvservice
 
 import "fmt"
+import "net/rpc"
+import "../node"
 
 // Represents a key in the system.
 type Key string
 
 // Represent a value in the system.
 type Value string
+
+type changes struct{
+	writes map[string]string
+	reads []string
+}
+
+var global_txID = 0
 
 
 // An interface representing a connection to the key-value store. To
@@ -63,6 +70,11 @@ type tx interface {
 func NewConnection(nodes []string) connection {
 	fmt.Printf("NewConnection\n")
 	c := new(myconn)
+	var err error
+	c.client, err = rpc.Dial("tcp", nodes[0])
+	if err != nil {
+		return nil
+	}
 	return c
 }
 
@@ -71,20 +83,23 @@ func NewConnection(nodes []string) connection {
 
 // Concrete implementation of a connection interface.
 type myconn struct {
-	// TODO
+	client *rpc.Client
 }
 
 // Create a new transaction.
 func (conn *myconn) NewTX() (tx, error) {
 	fmt.Printf("NewTX\n")
-	m := new(mytx)
+	m := new(Mytx)
+	m.client = conn.client
+	m.changes.Reads = make(map[Key]Value)
+	m.changes.Writes = make(map[Key]Value)
 	return m, nil
 }
 
 // Close the connection.
 func (conn *myconn) Close() {
 	fmt.Printf("Close\n")
-	// TODO
+	conn.client.Close()
 }
 
 // /Connection interface
@@ -93,36 +108,82 @@ func (conn *myconn) Close() {
 //////////////////////////////////////////////
 // Transaction interface
 
+
+// KEY ASSUMPTION, CLIENT WILL NOT GET/PUT CONCURRENTLY
 // Concrete implementation of a tx interface.
-type mytx struct {
-	// TODO
+type Mytx struct {
+	changes *node.Changes
+	client *rpc.Client
 }
 
 // Retrieves a value v associated with a key k.
-func (t *mytx) Get(k Key) (success bool, v Value, err error) {
+func (t *Mytx) Get(k Key) (success bool, v Value, err error) {
 	fmt.Printf("Get\n")
-	// TODO
-	return true, "hello", nil
+	err = t.client.Call("Peer.Read", k, &v)
+	if err != nil {
+		return false, nil, err
+	}
+	t.changes.Reads[k] = v
+	return true, v, nil
 }
 
 // Associates a value v with a key k.
-func (t *mytx) Put(k Key, v Value) (success bool, err error) {
+func (t *Mytx) Put(k Key, v Value) (success bool, err error) {
 	fmt.Printf("Put\n")
-	// TODO
-	return true, nil
+	// if we already have written to this value we do not need to get the lock again
+	if _, ok := t.changes.Writes[k]; ok {
+		t.changes.Writes[k] = v
+		return true, nil
+	}
+	// we have not already written, so we must get lock
+	// first we check if we have already read for this value,
+	if _, ok := t.changes.Reads[k]; ok {
+		// we have already read, and hold the read lock so we must first drop
+		// the read lock we own before we acquire the write lock
+		// there is an problematic case of another client(s) holding their own read
+		// lock and thus delaying the write... wonder if anything can be done
+		// to upper bound the delay TODO
+		err = t.client.Call("Peer.FreeReadThenWritelock", k, &success)
+		if err != nil {
+			return false, err
+		}
+		delete(t.changes.Reads,k)
+		t.changes.Writes[k] = v
+		return success, err
+	} else {
+		// we "write" by acquiring the write lock and saving the write value
+		// to be commited later
+		err = t.client.Call("Peer.Write", k, &success)
+		if err != nil {
+			return false, err
+		}
+		t.changes.Writes[k] = v
+		return success, err
+	}
 }
 
 // Commits the transaction.
-func (t *mytx) Commit() (success bool, txID int, err error) {
+func (t *Mytx) Commit() (success bool, txID int, err error) {
 	fmt.Printf("Commit\n")
-	// TODO
-	return true, 0, nil
+	// commit will write what needs to be written and drop all locks
+	err = t.client.Call("Peer.Commit", t.changes, &success)
+	if err != nil {
+		return false, nil, err
+	}
+	global_txID += 1
+	return success, global_txID, nil
 }
 
 // Aborts the transaction.
-func (t *mytx) Abort() {
+func (t *Mytx) Abort() {
 	fmt.Printf("Abort\n")
-	// TODO
+	// this should abandon all write and drop all locks
+	var success bool
+	t.client.Call("Peer.Abort", t.changes, &success)
+	// ditch changes
+	t.changes.Reads = make(map[Key]Value)
+	t.changes.Writes = make(map[Key]Value)
+
 }
 
 // /Transaction interface
