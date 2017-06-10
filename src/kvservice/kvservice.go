@@ -138,11 +138,6 @@ func (t *Mytx) Put(k Key, v Value) (success bool, err error) {
 	// we have not already written, so we must get lock
 	// first we check if we have already read for this value,
 	if _, ok := t.changes.Reads[k]; ok {
-		// we have already read, and hold the read lock so we must first drop
-		// the read lock we own before we acquire the write lock
-		// there is an problematic case of another client(s) holding their own read
-		// lock and thus delaying the write... wonder if anything can be done
-		// to upper bound the delay TODO
 		err = t.client.Call("Peer.FreeReadThenWritelock", k, &success)
 		if err != nil {
 			return false, err

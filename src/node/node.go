@@ -151,14 +151,6 @@ func (p *Peer) Commit(mods Changes, reply *bool) error {
 }
 
 func (p *Peer) Abort(mods Changes, reply *bool) error {
-	//drop all locks, do nothing else for now
-	//TODO the Write method above can expand the elements Map
-	// if left untouched, we waste memory, until key is used again
-	//could be managed better... to avoid this somehow, we can
-	// possible truncate the elements map here, but that can be heavy
-	// holds up other concurrent operations on elements map...
-	// maybe this cost can be amortized somehow over writes by keeping
-	// a separate structure?? TODO
 
 	elementsLock.RLock()
 	for k,_ := range mods.Writes {
