@@ -65,11 +65,10 @@ func (p *Peer) Read(key kvservice.Key, reply *kvservice.Value) error {
 	elock := elements[key]
 	elementsLock.RUnlock()
 
-	// readlock element
-	(*elock).RLock()
-
 	// read from element
 	resourceLock.RLock()
+	// readlock element
+	(*elock).RLock()
 	*reply = resources[key]
 	resourceLock.RUnlock()
 	return nil
@@ -79,15 +78,17 @@ func (p *Peer) Read(key kvservice.Key, reply *kvservice.Value) error {
 // called by write, don't actually write anything, just lock for writing later during commit
 func (p *Peer) Write(key kvservice.Key, reply *bool) error {
 	// get element lock
-	elementsLock.Lock()
+	elementsLock.RLock()
 	elock, exists := elements[key]
+	elementsLock.RUnlock()
 
 	if exists == false {
+		elementsLock.Lock()
 		elements[key] = new(sync.RWMutex)
 		elock = elements[key]
+		elementsLock.Unlock()
 	}
 
-	elementsLock.Unlock()
 	// write lock element
 	(*elock).Lock()
 
