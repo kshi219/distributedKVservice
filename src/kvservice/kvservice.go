@@ -2,7 +2,7 @@ package kvservice
 
 import "fmt"
 import "net/rpc"
-import "../node"
+
 
 // Represents a key in the system.
 type Key string
@@ -10,12 +10,14 @@ type Key string
 // Represent a value in the system.
 type Value string
 
-type changes struct{
-	writes map[string]string
-	reads []string
-}
 
-var global_txID = 0
+
+type Changes struct{
+	Writes map[Key]Value
+	// for reads the value of the map is not used..
+	// may be a better struct for this? TODO
+	Reads map[Key]Value
+}
 
 
 // An interface representing a connection to the key-value store. To
@@ -91,6 +93,7 @@ func (conn *myconn) NewTX() (tx, error) {
 	fmt.Printf("NewTX\n")
 	m := new(Mytx)
 	m.client = conn.client
+	m.changes = new(Changes)
 	m.changes.Reads = make(map[Key]Value)
 	m.changes.Writes = make(map[Key]Value)
 	return m, nil
@@ -112,16 +115,28 @@ func (conn *myconn) Close() {
 // KEY ASSUMPTION, CLIENT WILL NOT GET/PUT CONCURRENTLY
 // Concrete implementation of a tx interface.
 type Mytx struct {
-	changes *node.Changes
+	changes *Changes
 	client *rpc.Client
 }
 
 // Retrieves a value v associated with a key k.
 func (t *Mytx) Get(k Key) (success bool, v Value, err error) {
 	fmt.Printf("Get\n")
+	//check if we are already have written to /read from this key
+	if _, ok := t.changes.Writes[k]; ok {
+		v = t.changes.Writes[k]
+		return true, v, nil
+	}
+
+	if _, ok := t.changes.Reads[k]; ok {
+		v = t.changes.Reads[k]
+		return true, v, nil
+	}
+
+
 	err = t.client.Call("Peer.Read", k, &v)
 	if err != nil {
-		return false, nil, err
+		return false, "", err
 	}
 	t.changes.Reads[k] = v
 	return true, v, nil
@@ -161,12 +176,13 @@ func (t *Mytx) Put(k Key, v Value) (success bool, err error) {
 func (t *Mytx) Commit() (success bool, txID int, err error) {
 	fmt.Printf("Commit\n")
 	// commit will write what needs to be written and drop all locks
-	err = t.client.Call("Peer.Commit", t.changes, &success)
+	err = t.client.Call("Peer.Commit", t.changes, &txID)
 	if err != nil {
-		return false, nil, err
+		return false, 0, err
 	}
-	global_txID += 1
-	return success, global_txID, nil
+	t.changes.Reads = make(map[Key]Value)
+	t.changes.Writes = make(map[Key]Value)
+	return true, txID, nil
 }
 
 // Aborts the transaction.
