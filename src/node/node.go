@@ -22,21 +22,31 @@ import (
 //var rServerConn *rpc.Client
 
 var LOCALPID int
-var numPeers int
 var peerIPs map[int]string
 
 
-var resources map[kvservice.Key]kvservice.Value // the k-v store
+var LWWsetlocal map[kvservice.Key][]ValueTime
+var LWWsetpublic map[kvservice.Key][]ValueTime
+
+type ValueTime struct {
+	Value kvservice.Value
+	ExeTime time.Time
+}
+
+
 
 
 var elements map[kvservice.Key]*sync.RWMutex // map of locks for each key, pointers so we can wait on/modify
                                     // each individual lock without modifying the map
-
+var LWWsetlocalLock sync.Mutex
+var LWWsetpublicLock sync.Mutex
 var resourceLock sync.RWMutex // we can only have one writer to the resources map
 var elementsLock sync.RWMutex // we can only have one writer to the elements map
 var txLock sync.Mutex
 
 type Peer int
+
+type Commiter int
 
 var global_txID int
 
@@ -74,9 +84,12 @@ func main() {
 	}
 
 	fmt.Println("finished setup")
-	resources = make(map[kvservice.Key]kvservice.Value)
 	elements = make(map[kvservice.Key]*sync.RWMutex)
+	LWWsetlocal = make(map[kvservice.Key][]ValueTime)
+	LWWsetpublic = make(map[kvservice.Key][]ValueTime)
 	global_txID = 0
+
+	go receiveCommitsServer(peerIPs[LOCALPID])
 
 	pServer := rpc.NewServer()
 	p := new(Peer)
@@ -97,6 +110,88 @@ func main() {
 	time.Sleep(60 * 1000 * time.Millisecond)
 }
 
+
+func receiveCommitsServer(externIP string) {
+	rServer := rpc.NewServer()
+	c := new(Commiter)
+	rServer.Register(c)
+
+	fmt.Println("starting recieve commit service")
+
+	l, err := net.Listen("tcp", externIP)
+	checkError("", err, true)
+	for {
+		fmt.Println("waiting from connection")
+		conn, err := l.Accept()
+		checkError("", err, false)
+		fmt.Println("got connection at: ", conn)
+		go rServer.ServeConn(conn)
+	}
+}
+
+func (c *Commiter) ReceiveCommit(newSet map[kvservice.Key][]ValueTime, success *bool) error{
+	LWWsetpublicLock.Lock()
+
+	for k,vtslice := range newSet {
+		//for each key in incoming set, take max of new set and existing set
+		newTime := vtslice[0].ExeTime
+		newval := vtslice[0].Value
+		for _,vt := range vtslice {
+			if vt.ExeTime.After(newTime) {
+				newval = vt.Value
+				newTime = vt.ExeTime
+			}
+		}
+
+		oldTime := LWWsetpublic[k][0].ExeTime
+		oldval := LWWsetpublic[k][0].Value
+		for _,vt := range LWWsetpublic[k] {
+			if vt.ExeTime.After(oldTime) {
+				oldval = vt.Value
+				oldTime = vt.ExeTime
+			}
+		}
+
+		if oldTime.Before(newTime) {
+			LWWsetpublic[k] = []ValueTime{ValueTime{newval, newTime}}
+		} else {
+			LWWsetpublic[k] = []ValueTime{ValueTime{oldval, oldTime}}
+		}
+	}
+
+	LWWsetpublicLock.Unlock()
+	return nil
+}
+
+func updategetlatestVal(key kvservice.Key) kvservice.Value{
+
+	var ret kvservice.Value
+	LWWsetpublicLock.Lock()
+	publicvt := LWWsetpublic[key][0]
+	LWWsetpublicLock.Unlock()
+
+	LWWsetlocalLock.Lock()
+	var lasttime time.Time
+	var localval kvservice.Value
+	for _,vt := range LWWsetlocal[key] {
+		if vt.ExeTime.After(lasttime) {
+			localval = vt.Value
+			lasttime = vt.ExeTime
+		}
+	}
+	if lasttime.After(publicvt.ExeTime){
+		LWWsetlocal[key] = []ValueTime{ValueTime{localval,lasttime}}
+		ret = localval
+	} else {
+		LWWsetlocal[key] = []ValueTime{ValueTime{publicvt.Value,publicvt.ExeTime}}
+		ret = publicvt.Value
+	}
+	LWWsetlocalLock.Unlock()
+
+	return ret
+
+}
+
 // called by Get, we assume all get requests correspond to existing keys
 func (p *Peer) Read(key kvservice.Key, reply *kvservice.Value) error {
 	// get elements rlock
@@ -112,7 +207,7 @@ func (p *Peer) Read(key kvservice.Key, reply *kvservice.Value) error {
 	fmt.Println("got read lock for key: [", key, "]")
 	// read from element
 	resourceLock.RLock()
-	*reply = resources[key]
+	*reply = updategetlatestVal(key)
 	resourceLock.RUnlock()
 	return nil
 }
@@ -139,7 +234,17 @@ func (p *Peer) Write(key kvservice.Key, reply *bool) error {
 	(*elock).Lock()
 	fmt.Println("got write lock for key: [", key, "]")
 
+
 	// read from element
+	*reply = true
+	return nil
+}
+
+func (p *Peer) Record(kv kvservice.KeyValTime, reply *bool) error {
+	//append to LWWset with write value and time
+	LWWsetlocalLock.Lock()
+	LWWsetlocal[kv.K] = append(LWWsetlocal[kv.K], ValueTime{kv.V, kv.T})
+	LWWsetlocalLock.Unlock()
 	*reply = true
 	return nil
 }
@@ -172,14 +277,22 @@ func (p *Peer) Commit(mods kvservice.Changes, txID *int) error {
 	fmt.Println("txID determined to be ", *txID)
 	txLock.Unlock()
 
+	//broadcast Commit TODO make this more granular, broadcast individual puts
+	for index, addr := range peerIPs {
+		if index == LOCALPID {
+			continue
+		}
+		client, err := rpc.Dial("tcp", addr)
+		if err != nil {
+			return err
+		}
+		var success bool
+		client.Call("Commiter.ReceiveCommit", LWWsetlocal, &success)
+
+	}
 
 
-	for k,v := range mods.Writes {
-		//write
-		resourceLock.Lock()
-		fmt.Println("write Value=(", v, ") to key=", "[", k, "]")
-		resources[k] = v
-		resourceLock.Unlock()
+	for k,_ := range mods.Writes {
 
 		// get elements lock
 		elementsLock.RLock()

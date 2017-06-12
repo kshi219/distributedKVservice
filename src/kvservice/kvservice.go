@@ -1,7 +1,10 @@
 package kvservice
 
 import "fmt"
-import "net/rpc"
+import (
+	"net/rpc"
+	"time"
+)
 
 
 // Represents a key in the system.
@@ -10,7 +13,11 @@ type Key string
 // Represent a value in the system.
 type Value string
 
-
+type KeyValTime struct{
+	K Key
+	V Value
+	T time.Time
+}
 
 type Changes struct{
 	Writes map[Key]Value
@@ -149,6 +156,8 @@ func (t *Mytx) Put(k Key, v Value) (success bool, err error) {
 	if _, ok := t.changes.Writes[k]; ok {
 		t.changes.Writes[k] = v
 		return true, nil
+		kvt := KeyValTime{k,v,time.Now()}
+		t.client.Call("Peer.FreeReadThenWritelock", kvt, &success)
 	}
 	// we have not already written, so we must get lock
 	// first we check if we have already read for this value,
@@ -159,6 +168,8 @@ func (t *Mytx) Put(k Key, v Value) (success bool, err error) {
 		}
 		delete(t.changes.Reads,k)
 		t.changes.Writes[k] = v
+		kvt := KeyValTime{k,v,time.Now()}
+		t.client.Call("Peer.FreeReadThenWritelock", kvt, &success)
 		return success, err
 	} else {
 		// we "write" by acquiring the write lock and saving the write value
@@ -168,6 +179,8 @@ func (t *Mytx) Put(k Key, v Value) (success bool, err error) {
 			return false, err
 		}
 		t.changes.Writes[k] = v
+		kvt := KeyValTime{k,v,time.Now()}
+		t.client.Call("Peer.FreeReadThenWritelock", kvt, &success)
 		return success, err
 	}
 }
