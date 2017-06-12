@@ -8,7 +8,7 @@ The goal of this project is to exercise distributed system concepts including co
 ## Description
 <img src="http://www.cs.ubc.ca/~bestchai/teaching/cs416_2016w2/assign6/arch.png" width="500">
 
-This is to be a distributed key-value store service composed of N nodes. Each node will replicate the entire key-value store. Thus the system will be avaliable for up to N-1 node failures. By using strict 2-phase commit and write-ahead logging the service will provide transactional semantics to clients satisfying **A**tomic, **C**onsistent, **I**ndependent (but not **D**urable, everything will be in memory) semantic requirements. 
+This is to be a distributed key-value store service composed of N nodes. Each node will replicate the entire key-value store. Thus the system will be avaliable for up to N-1 node failures. By using strict 2-phase commit and write-ahead logging the service will provide transactional semantics to clients satisfying **A**tomic, **C**onsistent, **I**ndependent **D**urable semantic requirements. 
 
 After a basic service is built, ideally this can serve as a base for exploring optimistic replication with Conflict-free Replicated Data Types and concurrency control backed by a block-chain protocol.
 
