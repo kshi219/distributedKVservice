@@ -276,8 +276,7 @@ func (p *Peer) Commit(mods kvservice.Changes, txID *int) error {
 	global_txID += 1
 	fmt.Println("txID determined to be ", *txID)
 	txLock.Unlock()
-
-	//broadcast Commit TODO make this more granular, broadcast individual puts
+	
 	for index, addr := range peerIPs {
 		if index == LOCALPID {
 			continue
